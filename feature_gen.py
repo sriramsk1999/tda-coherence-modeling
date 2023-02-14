@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from transformers import BertTokenizer, BertForSequenceClassification, RobertaModel, \
-    RobertaTokenizerFast, RobertaForSequenceClassification, RobertaTokenizer
+        RobertaTokenizerFast, RobertaForSequenceClassification, RobertaTokenizer, AutoTokenizer
 import transformers
 import sys
 import os
@@ -18,12 +18,15 @@ import itertools
 
 from stats_count import *
 import ripser_count
-from grab_weights import grab_attention_weights, text_preprocessing
+from grab_weights import grab_attention_weights, text_preprocessing, grab_hat_attention_weights
 
 from features_calculation_by_thresholds import get_token_length, function_for_v, split_matricies_and_lengths
 from features_calculation_ripser_and_templates import attention_to_self, attention_to_next_token, attention_to_prev_token, \
     attention_to_beginning, attention_to_ids, count_template_features, calculate_features_t, get_list_of_ids, reformat_barcodes, \
     subprocess_wrap, get_only_barcodes, format_barcodes, save_barcodes, unite_barcodes, matrix_distance
+
+from modelling_hat import HATModelForSequentialSentenceClassification
+
 
 parser = argparse.ArgumentParser(description = 'End to end TDA feature generation (parallelized)')
 
@@ -32,6 +35,7 @@ parser.add_argument("--data_name", help="Data Name", required=True)
 parser.add_argument("--IO_dir", help="I/O dir", required=True)
 parser.add_argument("--batch_size", help="Batch size", type=int, default=100)
 parser.add_argument("--nworkers", help="Number of workers for paralellization", type=int, default=25)
+parser.add_argument("--no-hat", help="Disable using HAT model.", dest='hat', action='store_false', default=True)
 
 args = parser.parse_args()
 print(args)
@@ -41,17 +45,11 @@ os.environ['CUDA_VISIBLE_DEVICES'] = cuda_device
 
 transformers.logging.set_verbosity_error()
 np.random.seed(42) # For reproducibility.
-max_tokens_amount  = 256 # The number of tokens to which the tokenized text is truncated / padded.
-stats_cap          = 500 # Max value that the feature can take. Is NOT applicable to Betty numbers.
-
-layers_of_interest = [i for i in range(12)]  # Layers for which attention matrices and features on them are
-                                             # calculated. For calculating features on all layers, leave it be
-                                             # [i for i in range(12)].
-stats_name = "s_e_v_c_b0b1" # The set of topological features that will be count (see explanation below)
-
 thresholds_array = [0.025, 0.05, 0.1, 0.25, 0.5, 0.75] # The set of thresholds
 thrs = len(thresholds_array)                           # ("t" in the paper)
-model_path = tokenizer_path = "roberta-base"
+
+stats_cap          = 500 # Max value that the feature can take. Is NOT applicable to Betty numbers.
+stats_name = "s_e_v_c_b0b1" # The set of topological features that will be count (see explanation below)
 
 # ### Explanation of stats_name parameter
 #
@@ -77,6 +75,18 @@ model_path = tokenizer_path = "roberta-base"
 #
 # e.t.c.
 
+if args.hat:
+    max_tokens_amount  = 4096 # The number of tokens to which the tokenized text is truncated / padded.
+    n_layers = 4 # Only 4 cross segment encoder blocks
+    model_path = tokenizer_path = "kiddothe2b/hierarchical-transformer-base-4096"
+else:
+    max_tokens_amount  = 256 # The number of tokens to which the tokenized text is truncated / padded.
+    n_layers = 12
+    model_path = tokenizer_path = "roberta-base"
+
+layers_of_interest = [i for i in range(n_layers)]  # Layers for which attention matrices and features on them are
+                                             # calculated. For calculating features on all layers, leave it be
+                                             # [i for i in range(12)].
 subset = args.data_name  # .csv file with the texts, for which we count topological features
 input_dir = args.IO_dir  # Name of the directory with .csv file
 output_dir = args.IO_dir # Name of the directory with calculations results
@@ -96,9 +106,11 @@ print("Max. amount of words in example:",       np.max(list(map(len, map(lambda 
 print("Min. amount of words in example:",       np.min(list(map(len, map(lambda x: re.sub('\w', ' ', x).split(" "), data['sentence'])))))
 
 MAX_LEN = max_tokens_amount
-tokenizer = RobertaTokenizer.from_pretrained(tokenizer_path, do_lower_case=False)
-tokenizer.do_lower_case = False
-data['tokenizer_length'] = get_token_length(data['sentence'].values, tokenizer, MAX_LEN)
+if args.hat:
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, do_lower_casse=False)
+else:
+    tokenizer = RobertaTokenizer.from_pretrained(tokenizer_path, do_lower_case=False)
+data['tokenizer_length'] = get_token_length(data['sentence'].values, tokenizer, MAX_LEN, args.hat)
 ntokens_array = data['tokenizer_length'].values
 
 number_of_batches = ceil(len(data['sentence']) / batch_size)
@@ -107,19 +119,22 @@ adj_matricies = []
 assert number_of_batches == len(batched_sentences) # sanity check
 Q = Queue()
 
-def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN):
-    model = RobertaForSequenceClassification.from_pretrained(model_path, output_attentions=True)
+def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, is_hat):
+    if is_hat:
+        model = HATModelForSequentialSentenceClassification.from_pretrained(model_path, trust_remote_code=True, output_attentions=True)
+    else:
+        model = RobertaForSequenceClassification.from_pretrained(model_path, output_attentions=True)
     model = model.to('cuda')
-
-    #attention_w = grab_attention_weights(model, tokenizer, batch, MAX_LEN, 'cuda')
-    #adj_matricies = attention_w
 
     minibatch_size = 25
     n_minibatches = ceil(len(batch) / minibatch_size)
     minibatch = np.array_split(batch, n_minibatches)
     adj_matricies = []
     for i in range(n_minibatches):
-        attention_w = grab_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
+        if is_hat:
+            attention_w = grab_hat_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
+        else:
+            attention_w = grab_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
         adj_matricies.append(attention_w)
     # sample X layer X head X n_token X n_token
     adj_matricies = np.concatenate(adj_matricies, axis=1)
@@ -127,7 +142,6 @@ def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN):
     Q.put(adj_matricies)
 
 for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
-
     # Name of the file for topological features array
     stats_file = f"{output_dir}new_features/{subset}_all_heads_{len(layers_of_interest)}_layers_{stats_name}_lists_array_{thrs}_thrs_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_{i+1}_of_{number_of_batches}.npy"
     # Name of the file for ripser features array
@@ -139,7 +153,7 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
 
     t1 = time.time()
     # Refactor to run as a separate process so that memory is freed for ripserplusplus
-    attention_grab = Process(target=get_attention_matrices, args=(model_path, tokenizer, batched_sentences[i], MAX_LEN))
+    attention_grab = Process(target=get_attention_matrices, args=(model_path, tokenizer, batched_sentences[i], MAX_LEN, args.hat))
     attention_grab.start()
     adj_matricies = Q.get()
     attention_grab.join()
@@ -151,9 +165,9 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     stats_tuple_lists_array = []
     ntokens = ntokens_array[i*batch_size: (i+1)*batch_size]
     splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
-    args = [(m, thresholds_array, ntokens, stats_name.split("_"), stats_cap) for m, ntokens in splitted]
+    arguments = [(m, thresholds_array, ntokens, stats_name.split("_"), stats_cap) for m, ntokens in splitted]
     stats_tuple_lists_array_part = pool.starmap(
-        count_top_stats, args
+        count_top_stats, arguments
     )
     stats_tuple_lists_array.append(np.concatenate([_ for _ in stats_tuple_lists_array_part], axis=3))
 
@@ -206,9 +220,9 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     barcodes = defaultdict(list)
     ntokens = ntokens_array[i*batch_size: (i+1)*batch_size]
     splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
-    args = [(m, ntokens, dim, lower_bound) for m, ntokens in splitted]
+    arguments = [(m, ntokens, dim, lower_bound) for m, ntokens in splitted]
     barcodes_all_parts = pool.starmap(
-        get_only_barcodes, args
+        get_only_barcodes, arguments
     )
     for barcode_part in barcodes_all_parts:
         barcodes = unite_barcodes(barcodes, barcode_part)
@@ -241,7 +255,7 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
 
     features_array = []
     features_part = []
-    n_layers, n_heads = 12, 12
+    n_heads = 12
     for layer in range(n_layers):
         features_layer = []
         for head in range(n_heads):
@@ -256,21 +270,24 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     print(f"Calculated ripser features. Time taken: {time.time() - t1}s")
     t1 = time.time()
 
-    feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
+    if args.hat: # HAT does not support 'comma' and 'dot', these require token level attention map but HAT provides segment level maps
+        feature_list = ['self', 'beginning', 'prev', 'next']
+    else:
+        feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
     features_array = []
 
     sentences = data['sentence'].values[i*batch_size:(i+1)*batch_size]
     splitted_indexes = np.array_split(np.arange(batch_size), num_of_workers)
     splitted_list_of_ids = [
-        get_list_of_ids(sentences[indx], tokenizer, MAX_LEN)
+        get_list_of_ids(sentences[indx], tokenizer, MAX_LEN, args.hat)
         for indx in splitted_indexes
     ]
     splitted_adj_matricies = [adj_matricies[indx] for indx in splitted_indexes]
 
-    args = [(m, feature_list, list_of_ids) for m, list_of_ids in zip(splitted_adj_matricies, splitted_list_of_ids)]
+    arguments = [(m, feature_list, list_of_ids) for m, list_of_ids in zip(splitted_adj_matricies, splitted_list_of_ids)]
 
     features_array_part = pool.starmap(
-        calculate_features_t, args
+        calculate_features_t, arguments
     )
     features_array.append(np.concatenate([_ for _ in features_array_part], axis=3))
 
