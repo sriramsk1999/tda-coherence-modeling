@@ -71,7 +71,6 @@ def attention_to_ids(matricies, list_of_ids, token_id):
     which representes the attention to some particular tokens,
     which ids are in the `list_of_ids` (commas, periods, separators).
     """
-   
     batch_size, n, m = matricies.shape
     EPS = 1e-7
     assert n == m, f"Input matrix has shape {n} x {m}, but the square matrix is expected"
@@ -116,13 +115,21 @@ def calculate_features_t(adj_matricies, template_features, ids=None):
     return np.asarray(features) # layer X head X n_features X samples
 
 
-def get_list_of_ids(sentences, tokenizer, MAX_LEN=None):
-    inputs = tokenizer.batch_encode_plus([text_preprocessing(s) for s in sentences],
-                                       add_special_tokens=True,
-                                       max_length=MAX_LEN,             # Max length to truncate/pad
-                                       pad_to_max_length=True,         # Pad sentence to max length)
-                                       truncation=True
-                                      )
+def get_list_of_ids(sentences, tokenizer, MAX_LEN=None, is_hat=False):
+    if is_hat:
+        inputs = tokenizer([text_preprocessing(s) for s in sentences],
+                               add_special_tokens=True,
+                               max_length=MAX_LEN,                # Max length to truncate/pad
+                               padding='max_length',              # Pad sentence to max length)
+                               truncation=True
+                              )
+    else:
+        inputs = tokenizer.batch_encode_plus([text_preprocessing(s) for s in sentences],
+                                           add_special_tokens=True,
+                                           max_length=MAX_LEN,             # Max length to truncate/pad
+                                           pad_to_max_length=True,         # Pad sentence to max length)
+                                           truncation=True
+                                          )
     return np.array(inputs['input_ids'])
 
 def reformat_barcodes(barcodes):

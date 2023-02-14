@@ -25,6 +25,28 @@ def grab_attention_weights(model, tokenizer, sentences, MAX_LEN, device='cuda:1'
     attention = np.asarray([layer.cpu().detach().numpy() for layer in attention], dtype=np.float16)
     return attention
 
+def grab_hat_attention_weights(model, tokenizer, sentences, MAX_LEN, device='cuda:1'):
+    '''Extract attention matrices from HAT. 
+    Extracts only the attentions of the Cross Segment Encoder (CSE) blocks. Shape: (4 x 1 x 12 x maxlen/128 x maxlen/128
+    The outputs of the Segment Wise Encoder (SWE) blocks are available in outputs['attentions']. Shape: (12 x maxlen/128  x 12 x 128 x 128)
+    '''
+    inputs = tokenizer([text_preprocessing(s) for s in sentences],
+                           add_special_tokens=True,
+                           max_length=MAX_LEN,                # Max length to truncate/pad
+                           padding='max_length',              # Pad sentence to max length)
+                           truncation=True
+                          )
+    input_ids = torch.tensor(inputs['input_ids']).to(device)
+    attention_mask = torch.tensor(inputs["attention_mask"]).to(device)
+    with torch.no_grad():
+        outputs = model(input_ids, attention_mask)
+        attention = outputs['sentence_attentions']
+        sentence_encoder_idxs = [2, 5, 8, 11] # Only 4 of the 12 idxs have valid outputs
+        attention = [attention[i] for i in sentence_encoder_idxs]
+    # layer X sample X head X n_token X n_token
+    attention = np.asarray([layer.cpu().detach().numpy() for layer in attention], dtype=np.float16)
+    return attention
+
 def grab_weights_for_all(reviews,
                         #  model_name='bert-base-multilingual-cased',
                          model_name='robert-base',

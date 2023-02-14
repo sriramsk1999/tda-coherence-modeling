@@ -15,16 +15,25 @@ import argparse
 
 warnings.filterwarnings('ignore')
 
-def get_token_length(batch_texts, tokenizer=None, MAX_LEN=None):
+def get_token_length(batch_texts, tokenizer=None, MAX_LEN=None, is_hat=False):
     print("Get token length")
-    inputs = tokenizer.batch_encode_plus(batch_texts,
-       return_tensors='pt',
-       add_special_tokens=True,
-       max_length=MAX_LEN,             # Max length to truncate/pad
-       pad_to_max_length=True,         # Pad sentence to max length
-       truncation=True
-    )
-    inputs = inputs['input_ids'].numpy()
+    if is_hat:
+        inputs = tokenizer(batch_texts,
+                               add_special_tokens=True,
+                               max_length=MAX_LEN,                # Max length to truncate/pad
+                               padding='max_length',              # Pad sentence to max length)
+                               truncation=True
+                              )
+        inputs = np.array(inputs['input_ids'])
+    else:
+        inputs = tokenizer.batch_encode_plus(batch_texts,
+           return_tensors='pt',
+           add_special_tokens=True,
+           max_length=MAX_LEN,             # Max length to truncate/pad
+           pad_to_max_length=True,         # Pad sentence to max length
+           truncation=True
+        )
+        inputs = inputs['input_ids'].numpy()
     n_tokens = []
     indexes = np.argwhere(inputs == tokenizer.pad_token_id)
     
