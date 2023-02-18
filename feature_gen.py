@@ -32,9 +32,9 @@ parser = argparse.ArgumentParser(description = 'End to end TDA feature generatio
 
 parser.add_argument("--cuda", help="Cuda Device", required=True)
 parser.add_argument("--data_name", help="Data Name", required=True)
-parser.add_argument("--IO_dir", help="I/O dir", required=True)
-parser.add_argument("--batch_size", help="Batch size", type=int, default=100)
-parser.add_argument("--nworkers", help="Number of workers for paralellization", type=int, default=25)
+parser.add_argument("--input_dir", help="input dir", required=True)
+parser.add_argument("--output_dir", help="output dir", required=True)
+parser.add_argument("--batch_size", help="Batch size", type=int, default=10)
 parser.add_argument("--no-hat", help="Disable using HAT model.", dest='hat', action='store_false', default=True)
 
 args = parser.parse_args()
@@ -88,14 +88,13 @@ layers_of_interest = [i for i in range(n_layers)]  # Layers for which attention 
                                              # calculated. For calculating features on all layers, leave it be
                                              # [i for i in range(12)].
 subset = args.data_name  # .csv file with the texts, for which we count topological features
-input_dir = args.IO_dir  # Name of the directory with .csv file
-output_dir = args.IO_dir # Name of the directory with calculations results
-prefix = output_dir + subset
+input_dir = args.input_dir  # Name of the directory with .csv file
+output_dir = args.output_dir # Name of the directory with calculations results
+os.makedirs(output_dir, exist_ok=True)
 
 # .csv file must contain the column with the name **sentence** with the texts. It can also contain the column **labels**, which will be needed for testing. Any other arbitrary columns will be ignored.
 
 batch_size = args.batch_size
-num_of_workers = args.nworkers
 
 data = pd.read_csv(input_dir + subset + ".csv").reset_index(drop=True)
 data['sentence'] = data['doc']
@@ -141,13 +140,14 @@ def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, is_hat):
     adj_matricies = np.swapaxes(adj_matricies,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
     Q.put(adj_matricies)
 
+idx = 0
 for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     # Name of the file for topological features array
-    stats_file = f"{output_dir}new_features/{subset}_all_heads_{len(layers_of_interest)}_layers_{stats_name}_lists_array_{thrs}_thrs_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_{i+1}_of_{number_of_batches}.npy"
+    stats_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_{stats_name}_lists_array_{thrs}_thrs_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_{i+1}_of_{number_of_batches}.npy"
     # Name of the file for ripser features array
-    ripser_file = f"{output_dir}new_features/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_ripser_{i+1}_of_{number_of_batches}.npy"
+    ripser_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_ripser_{i+1}_of_{number_of_batches}.npy"
     # Name of the file for template features array
-    template_file = f"{output_dir}new_features/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_template_{i+1}_of_{number_of_batches}.npy"
+    template_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_template_{i+1}_of_{number_of_batches}.npy"
 
     if os.path.exists(template_file): continue # Already generated, skipping
 
@@ -160,10 +160,12 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     print(f"Grabbed attentions. Time taken: {time.time() - t1}s")
     t1 = time.time()
 
+    curr_batch_size = len(batched_sentences[i])
+    num_of_workers = curr_batch_size
     pool = Pool(num_of_workers)
 
     stats_tuple_lists_array = []
-    ntokens = ntokens_array[i*batch_size: (i+1)*batch_size]
+    ntokens = ntokens_array[idx: idx+curr_batch_size]
     splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
     arguments = [(m, thresholds_array, ntokens, stats_name.split("_"), stats_cap) for m, ntokens in splitted]
     stats_tuple_lists_array_part = pool.starmap(
@@ -218,8 +220,6 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     ## Calculating and saving barcodes
 
     barcodes = defaultdict(list)
-    ntokens = ntokens_array[i*batch_size: (i+1)*batch_size]
-    splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
     arguments = [(m, ntokens, dim, lower_bound) for m, ntokens in splitted]
     barcodes_all_parts = pool.starmap(
         get_only_barcodes, arguments
@@ -276,8 +276,8 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
         feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
     features_array = []
 
-    sentences = data['sentence'].values[i*batch_size:(i+1)*batch_size]
-    splitted_indexes = np.array_split(np.arange(batch_size), num_of_workers)
+    sentences = data['sentence'].values[idx:idx+curr_batch_size]
+    splitted_indexes = np.array_split(np.arange(curr_batch_size), num_of_workers)
     splitted_list_of_ids = [
         get_list_of_ids(sentences[indx], tokenizer, MAX_LEN, args.hat)
         for indx in splitted_indexes
