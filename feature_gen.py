@@ -220,6 +220,7 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     ## Calculating and saving barcodes
 
     barcodes = defaultdict(list)
+    splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
     arguments = [(m, ntokens, dim, lower_bound) for m, ntokens in splitted]
     barcodes_all_parts = pool.starmap(
         get_only_barcodes, arguments
