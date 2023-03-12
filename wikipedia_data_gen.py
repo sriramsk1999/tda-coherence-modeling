@@ -47,7 +47,7 @@ def global_jumbling(type, perms, docs, output_dir):
                     id+=1
                     break
     df = pd.DataFrame(list(zip(doc_ids, texts, expert_label)), columns =['doc_id', 'doc', 'expert_label'])
-    df.to_csv(f"{output_dir}/wikpedia_global_{type}.csv")
+    df.to_csv(f"{output_dir}/wikipedia_global_{type}.csv")
 
 def local_jumbling(type, perms, docs, output_dir, para_size):
     ''' Shuffle paragraphs of  document to create non-coherent samples. '''
@@ -81,7 +81,7 @@ def local_jumbling(type, perms, docs, output_dir, para_size):
                     id+=1
                     break
     df = pd.DataFrame(list(zip(doc_ids, texts, expert_label)), columns =['doc_id', 'doc', 'expert_label'])
-    df.to_csv(f"{output_dir}/wikpedia_local_{type}.csv")
+    df.to_csv(f"{output_dir}/wikipedia_local_{type}.csv")
 
 nltk.download('punkt')
 

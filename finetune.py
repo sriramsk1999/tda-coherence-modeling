@@ -66,27 +66,53 @@ parser = argparse.ArgumentParser(description = 'Train/test transformer.')
 parser.add_argument("--cuda", help="Cuda Device", required=True)
 parser.add_argument("--batch_size", help="Batch Size", default=10, type=int)
 parser.add_argument("--epochs", help="number of epochs", default=10, type=int)
+parser.add_argument("--data_name", help = "data file name", required = True)
+parser.add_argument("--input_dir", help = "directory of csv files", required = True)
+parser.add_argument("--model_type", help = "which model to finetune", default='hat', choices=['hat', 'longformer'])
 args = parser.parse_args()
 
-data = pd.read_csv("wikipedia/wiki_dataset/yt_data.csv" ,error_bad_lines=False, engine="python")
-data = data[['comment_text','toxic']]
-data = data[0:1000]
+input_dir = args.input_dir
+data_name = args.data_name
+
+train_subset = f"{input_dir}/{data_name}_train.csv"
+test_subset = f"{input_dir}/{data_name}_test.csv"
+
+df_train= pd.read_csv(train_subset)
+df_test = pd.read_csv(test_subset)
+# Train/val split is not random as wikipedia dataset is ordered -> Original document followed by 3 permutations
+train_size = int(0.9 * len(df_train))
+df_train, df_val = df_train.iloc[:train_size], df_train.iloc[train_size:]
+
+
+df_train['expert_label'] = df_train['expert_label'].replace(1, 0).replace(3, 1)
+df_val['expert_label'] = df_val['expert_label'].replace(1, 0).replace(3, 1)
+df_test['expert_label'] = df_test['expert_label'].replace(1, 0).replace(3, 1)
+
 
 os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda
 device = torch.device(f"cuda")
 
-model_path = tokenizer_path = "kiddothe2b/hierarchical-transformer-base-4096"
+if(args.model_type == "hat"):
+    model_path = tokenizer_path = "kiddothe2b/hierarchical-transformer-base-4096"
+if(args.model_type == "longformer"):
+    model_path = tokenizer_path = "allenai/longformer-base-4096"
+
 MAX_LEN = 4096
 model = AutoModelForSequenceClassification.from_pretrained(model_path, trust_remote_code=True).to(device)
 tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, do_lower_case=False)
 
-X = list(data["comment_text"])
-y = list(data["toxic"])
-X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2,stratify=y)
-X_train, X_test, y_train, y_test = train_test_split(X_train, y_train, test_size = 0.2, stratify = y_train)
-X_train_tokenized = tokenizer(X_train, add_special_tokens=True, max_length=MAX_LEN, padding='max_length', truncation=True)
-X_val_tokenized = tokenizer(X_val, add_special_tokens=True, max_length=MAX_LEN, padding='max_length', truncation=True)
-X_test_tokenized = tokenizer(X_test, add_special_tokens=True, max_length=MAX_LEN, padding='max_length', truncation=True)
+X_train, X_val, X_test, y_train, y_val, y_test = df_train['doc'].tolist(), df_val['doc'].tolist(), df_test['doc'].tolist(), \
+    df_train['expert_label'].tolist(), df_val['expert_label'].tolist(), df_test['expert_label'].tolist()
+
+
+if(args.model_type == "hat"):  
+    X_train_tokenized = tokenizer(X_train, add_special_tokens=True, max_length=MAX_LEN, padding='max_length', truncation=True)
+    X_val_tokenized = tokenizer(X_val, add_special_tokens=True, max_length=MAX_LEN, padding='max_length', truncation=True)
+    X_test_tokenized = tokenizer(X_test, add_special_tokens=True, max_length=MAX_LEN, padding='max_length', truncation=True)
+elif(args.model_type == "longformer"):
+    X_train_tokenized = tokenizer(X_train, padding=True, truncation=True, max_length=MAX_LEN)
+    X_val_tokenized = tokenizer(X_val, padding=True, truncation=True, max_length=MAX_LEN)
+    X_test_tokenized = tokenizer(X_test, padding=True, truncation=True, max_length=MAX_LEN)
 
 batch_size = args.batch_size
 dataloaders = []
