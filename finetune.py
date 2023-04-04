@@ -15,6 +15,14 @@ import torch.nn as nn
 from sklearn.metrics import classification_report
 from tqdm import tqdm
 
+def freeze_all_but_classifier(model, model_type):
+    if model_type == 'longformer':
+        for param in model.longformer.parameters():
+            param.requires_grad = False
+    elif model_type == 'hat':
+        for param in model.hi_transformer.parameters():
+            param.requires_grad = False
+    return model
 
 def train():
     model.train() 
@@ -37,29 +45,28 @@ def train():
     
     for step, batch in enumerate(tqdm(val_dataloader)):
         batch = [r.to(device) for r in batch]
-        sent_id_val, mask_val, tda_val, labels_val = batch
-        preds_val = model(sent_id_val, mask_val, tda_val)
-        loss = cross_entropy(preds_val, labels_val)
+        sent_id, mask, labels = batch
+        preds = model(sent_id, mask)
+        loss = cross_entropy(preds.logits, labels)
         val_total_loss = val_total_loss + loss.item()
         avg_val_loss = val_total_loss/len(val_dataloader)
     
     return avg_loss, avg_val_loss
 
 def test(dataloader):
-	model.eval()
-	total_loss, total_accuracy = 0, 0
+    model.eval()
+    total_loss, total_accuracy = 0, 0
 	
-	pred_list = []
-	for step,batch in enumerate(tqdm(dataloader)):
-		batch = [r.to(device) for r in batch]
-
-		model.zero_grad()        
-		sent_id, mask, labels = batch
-		preds = model(sent_id, mask)
-		pred_list.append(preds)
-	pred_list = torch.cat(pred_list)
-	pred_list = torch.argmax(pred_list, axis = 1)
-	return pred_list
+    pred_list = []
+    for step,batch in enumerate(tqdm(dataloader)):
+        batch = [r.to(device) for r in batch]
+        model.zero_grad()
+        sent_id, mask, labels = batch
+        preds = model(sent_id, mask)
+        pred_list.append(preds.logits)
+    pred_list = torch.cat(pred_list)
+    pred_list = torch.argmax(pred_list, axis = 1)
+    return pred_list
 
 
 parser = argparse.ArgumentParser(description = 'Train/test transformer.')
@@ -99,6 +106,7 @@ if(args.model_type == "longformer"):
 
 MAX_LEN = 4096
 model = AutoModelForSequenceClassification.from_pretrained(model_path, trust_remote_code=True).to(device)
+model = freeze_all_but_classifier(model, args.model_type)
 tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, do_lower_case=False)
 
 X_train, X_val, X_test, y_train, y_val, y_test = df_train['doc'].tolist(), df_val['doc'].tolist(), df_test['doc'].tolist(), \
