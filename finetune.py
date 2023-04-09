@@ -28,12 +28,14 @@ def train():
     model.train() 
     
     total_loss, total_accuracy = 0, 0
+    train_pred_list, val_pred_list = [], []
     for step,batch in enumerate(tqdm(train_dataloader)):
         batch = [r.to(device) for r in batch]
         sent_id, mask, labels = batch
         preds = model(sent_id, mask)
         model.zero_grad()   
         loss = cross_entropy(preds.logits, labels)
+        train_pred_list.append(preds.logits)
         total_loss = total_loss + loss.item()
         loss.backward()
         optimizer.step()
@@ -48,10 +50,13 @@ def train():
         sent_id, mask, labels = batch
         preds = model(sent_id, mask)
         loss = cross_entropy(preds.logits, labels)
+        val_pred_list.append(preds.logits)
         val_total_loss = val_total_loss + loss.item()
         avg_val_loss = val_total_loss/len(val_dataloader)
     
-    return avg_loss, avg_val_loss
+    train_pred_list = torch.argmax(torch.cat(train_pred_list), axis=1)
+    val_pred_list = torch.argmax(torch.cat(val_pred_list), axis=1)
+    return avg_loss, train_pred_list, avg_val_loss, val_pred_list
 
 def test(dataloader):
     model.eval()
@@ -157,13 +162,11 @@ train_losses=[]
 val_losses = []
 for epoch in range(epochs):
 	print('\n Epoch {:} / {:}'.format(epoch + 1, epochs))
-	train_loss, val_loss = train()
+	train_loss, train_pred, val_loss, val_pred = train()
 	train_losses.append(train_loss)
 	val_losses.append(val_loss)
-	preds = test(val_dataloader)
-	preds_tr = test(train_dataloader)
-	val_acc = (preds.cpu() == val_y).float().mean()
-	train_acc = (preds_tr.cpu() == train_y).float().mean()
+	train_acc = (train_pred.cpu() == train_y).float().mean()
+	val_acc = (val_pred.cpu() == val_y).float().mean()
 	print(f"Training Loss: {train_loss}, Validation Loss: {val_loss}, Validation acc: {val_acc}, Train acc: {train_acc}")
 
 
