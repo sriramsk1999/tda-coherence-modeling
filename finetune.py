@@ -24,6 +24,19 @@ def freeze_all_but_classifier(model, model_type):
             param.requires_grad = False
     return model
 
+def loss_weight_factor(pred, label):
+    '''
+    Manually reweight loss as PyTorch does not support weighted cross entropy for batch_size==1.
+    Only works for binary classification. Weights are set for a dataset with a 75-25 split of classes.
+    '''
+    CLASS_WTS = {0: 0.667, 1: 2.}
+    if pred == label:
+        return 1
+    else:
+        # if pred=0, label=1 return 2.
+        # if pred=1, label=0 return 0.667
+        return CLASS_WTS[label]
+
 def train():
     model.train() 
     
@@ -35,6 +48,8 @@ def train():
         preds = model(sent_id, mask)
         model.zero_grad()   
         loss = cross_entropy(preds.logits, labels)
+        if len(preds) == 1:
+            loss = loss * loss_weight_factor(torch.argmax(preds.logits, axis=1).item(), labels.item())
         train_pred_list.append(preds.logits)
         total_loss = total_loss + loss.item()
         loss.backward()
@@ -81,6 +96,7 @@ parser.add_argument("--epochs", help="number of epochs", default=10, type=int)
 parser.add_argument("--data_name", help = "data file name", required = True)
 parser.add_argument("--input_dir", help = "directory of csv files", required = True)
 parser.add_argument("--model_type", help = "which model to finetune", default='hat', choices=['hat', 'longformer'])
+parser.add_argument("--freeze_model", help = "freeze all layers except classifier", default=False, action='store_true', dest='freeze_model')
 args = parser.parse_args()
 
 input_dir = args.input_dir
@@ -111,7 +127,9 @@ if(args.model_type == "longformer"):
 
 MAX_LEN = 4096
 model = AutoModelForSequenceClassification.from_pretrained(model_path, trust_remote_code=True).to(device)
-model = freeze_all_but_classifier(model, args.model_type)
+if args.freeze_model:
+    print("Freezing all layers except classifier")
+    model = freeze_all_but_classifier(model, args.model_type)
 tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, do_lower_case=False)
 
 X_train, X_val, X_test, y_train, y_val, y_test = df_train['doc'].tolist(), df_val['doc'].tolist(), df_test['doc'].tolist(), \
@@ -155,7 +173,13 @@ weights = torch.tensor(class_wts,dtype=torch.float)
 weights = weights.to(device)
 
 print("getting cross_entropy_loss")
-cross_entropy  = nn.CrossEntropyLoss(weight=weights) 
+if batch_size == 1:
+    # Manually implement weighting inside train()
+    # PyTorch does not support weighted cross entropy with batchh_size == 1
+    cross_entropy  = nn.CrossEntropyLoss() 
+else:
+    # Normal weighting
+    cross_entropy  = nn.CrossEntropyLoss(weight=weights) 
 epochs = args.epochs
 
 train_losses=[]
