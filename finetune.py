@@ -59,11 +59,12 @@ def train():
     val_total_loss = 0
     model.eval()
     print("Evaluating the model")
-    
+    torch.cuda.empty_cache()
     for step, batch in enumerate(tqdm(val_dataloader)):
         batch = [r.to(device) for r in batch]
         sent_id, mask, labels = batch
-        preds = model(sent_id, mask)
+        with torch.no_grad():
+            preds = model(sent_id, mask)
         loss = cross_entropy(preds.logits, labels)
         val_pred_list.append(preds.logits)
         val_total_loss = val_total_loss + loss.item()
