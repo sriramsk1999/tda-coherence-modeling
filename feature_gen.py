@@ -149,9 +149,19 @@ def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, model_type):
         elif model_type == 'longformer':
             attention_w = grab_longformer_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
         adj_matricies.append(attention_w)
-    # sample X layer X head X n_token X n_token
-    adj_matricies = np.concatenate(adj_matricies, axis=1)
-    adj_matricies = np.swapaxes(adj_matricies,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
+    if model_type == 'roberta' or model_type == 'hat':
+        # sample X layer X head X n_token X n_token
+        adj_matricies = np.concatenate(adj_matricies, axis=1)
+        adj_matricies = np.swapaxes(adj_matricies,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
+    elif model_type == 'longformer':
+        adj_matricies_local = [x[0] for x in adj_matricies]
+        adj_matricies_local = np.concatenate(adj_matricies_local, axis=1)
+        adj_matricies_local = np.swapaxes(adj_matricies_local,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
+        adj_matricies_global = [x[1] for x in adj_matricies]
+        adj_matricies_global  = np.concatenate(adj_matricies_global , axis=1)
+        adj_matricies_global  = np.swapaxes(adj_matricies_global ,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
+
+        adj_matricies = [adj_matricies_local, adj_matricies_global]
     Q.put(adj_matricies)
 
 idx = 0
@@ -167,7 +177,6 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
 
     t1 = time.time()
     # Refactor to run as a separate process so that memory is freed for ripserplusplus
-
     attention_grab = Process(target=get_attention_matrices, args=(model_path, tokenizer, batched_sentences[i], MAX_LEN, args.model_type))
     attention_grab.start()
     adj_matricies = Q.get()
