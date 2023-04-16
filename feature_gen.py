@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from transformers import BertTokenizer, BertForSequenceClassification, RobertaModel, \
-        RobertaTokenizerFast, RobertaForSequenceClassification, RobertaTokenizer, AutoTokenizer
+        RobertaTokenizerFast, RobertaForSequenceClassification, RobertaTokenizer, AutoTokenizer, \
+        LongformerForSequenceClassification
 import transformers
 import sys
 import os
@@ -18,7 +19,7 @@ import itertools
 
 from stats_count import *
 import ripser_count
-from grab_weights import grab_attention_weights, text_preprocessing, grab_hat_attention_weights
+from grab_weights import grab_attention_weights, text_preprocessing, grab_hat_attention_weights, grab_longformer_attention_weights
 
 from features_calculation_by_thresholds import get_token_length, function_for_v, split_matricies_and_lengths
 from features_calculation_ripser_and_templates import attention_to_self, attention_to_next_token, attention_to_prev_token, \
@@ -35,7 +36,7 @@ parser.add_argument("--data_name", help="Data Name", required=True)
 parser.add_argument("--input_dir", help="input dir", required=True)
 parser.add_argument("--output_dir", help="output dir", required=True)
 parser.add_argument("--batch_size", help="Batch size", type=int, default=10)
-parser.add_argument("--no-hat", help="Disable using HAT model.", dest='hat', action='store_false', default=True)
+parser.add_argument("--model_type", help="Type of model used", choices=['roberta', 'hat', 'longformer'], required=True)
 
 args = parser.parse_args()
 print(args)
@@ -75,14 +76,20 @@ stats_name = "s_e_v_c_b0b1" # The set of topological features that will be count
 #
 # e.t.c.
 
-if args.hat:
+if args.model_type == 'hat':
     max_tokens_amount  = 4096 # The number of tokens to which the tokenized text is truncated / padded.
     n_layers = 4 # Only 4 cross segment encoder blocks
     model_path = tokenizer_path = "kiddothe2b/hierarchical-transformer-base-4096"
-else:
+elif args.model_type == 'roberta':
     max_tokens_amount  = 256 # The number of tokens to which the tokenized text is truncated / padded.
     n_layers = 12
     model_path = tokenizer_path = "roberta-base"
+elif args.model_type == 'longformer':
+    max_tokens_amount = 4096 # The number of tokens to which the tokenized text is truncated / padded.
+    n_layers = 12
+    model_path = tokenizer_path = "allenai/longformer-base-4096"
+else:
+    raise NotImplementedError
 
 layers_of_interest = [i for i in range(n_layers)]  # Layers for which attention matrices and features on them are
                                              # calculated. For calculating features on all layers, leave it be
@@ -105,11 +112,14 @@ print("Max. amount of words in example:",       np.max(list(map(len, map(lambda 
 print("Min. amount of words in example:",       np.min(list(map(len, map(lambda x: re.sub('\w', ' ', x).split(" "), data['sentence'])))))
 
 MAX_LEN = max_tokens_amount
-if args.hat:
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, do_lower_casse=False)
-else:
+if args.model_type == 'hat':
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, do_lower_case=False)
+elif args.model_type == 'roberta':
     tokenizer = RobertaTokenizer.from_pretrained(tokenizer_path, do_lower_case=False)
-data['tokenizer_length'] = get_token_length(data['sentence'].values, tokenizer, MAX_LEN, args.hat)
+elif args.model_type == 'longformer':
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, do_lower_case=False)
+
+data['tokenizer_length'] = get_token_length(list(data['sentence'].values), tokenizer, MAX_LEN, args.model_type)
 ntokens_array = data['tokenizer_length'].values
 
 number_of_batches = ceil(len(data['sentence']) / batch_size)
@@ -118,11 +128,13 @@ adj_matricies = []
 assert number_of_batches == len(batched_sentences) # sanity check
 Q = Queue()
 
-def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, is_hat):
-    if is_hat:
+def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, model_type):
+    if model_type == 'hat':
         model = HATModelForSequentialSentenceClassification.from_pretrained(model_path, trust_remote_code=True, output_attentions=True)
-    else:
+    elif model_type == 'roberta':
         model = RobertaForSequenceClassification.from_pretrained(model_path, output_attentions=True)
+    elif model_type == 'longformer':
+        model = LongformerForSequenceClassification.from_pretrained(model_path, trust_remote_code=True, output_attentions=True)
     model = model.to('cuda')
 
     minibatch_size = 25
@@ -130,10 +142,12 @@ def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, is_hat):
     minibatch = np.array_split(batch, n_minibatches)
     adj_matricies = []
     for i in range(n_minibatches):
-        if is_hat:
+        if model_type == 'hat':
             attention_w = grab_hat_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
-        else:
+        elif model_type == 'roberta':
             attention_w = grab_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
+        elif model_type == 'longformer':
+            attention_w = grab_longformer_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
         adj_matricies.append(attention_w)
     # sample X layer X head X n_token X n_token
     adj_matricies = np.concatenate(adj_matricies, axis=1)
@@ -153,7 +167,8 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
 
     t1 = time.time()
     # Refactor to run as a separate process so that memory is freed for ripserplusplus
-    attention_grab = Process(target=get_attention_matrices, args=(model_path, tokenizer, batched_sentences[i], MAX_LEN, args.hat))
+
+    attention_grab = Process(target=get_attention_matrices, args=(model_path, tokenizer, batched_sentences[i], MAX_LEN, args.model_type))
     attention_grab.start()
     adj_matricies = Q.get()
     attention_grab.join()
@@ -271,16 +286,18 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     print(f"Calculated ripser features. Time taken: {time.time() - t1}s")
     t1 = time.time()
 
-    if args.hat: # HAT does not support 'comma' and 'dot', these require token level attention map but HAT provides segment level maps
+    if args.model_type == 'hat': # HAT does not support 'comma' and 'dot', these require token level attention map but HAT provides segment level maps
         feature_list = ['self', 'beginning', 'prev', 'next']
-    else:
+    elif args.model_type == 'roberta':
+        feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
+    elif args.model_type == 'longformer':
         feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
     features_array = []
 
     sentences = data['sentence'].values[idx:idx+curr_batch_size]
     splitted_indexes = np.array_split(np.arange(curr_batch_size), num_of_workers)
     splitted_list_of_ids = [
-        get_list_of_ids(sentences[indx], tokenizer, MAX_LEN, args.hat)
+        get_list_of_ids(sentences[indx], tokenizer, MAX_LEN, args.model_type)
         for indx in splitted_indexes
     ]
     splitted_adj_matricies = [adj_matricies[indx] for indx in splitted_indexes]

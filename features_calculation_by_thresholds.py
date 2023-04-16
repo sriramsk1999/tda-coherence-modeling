@@ -15,9 +15,9 @@ import argparse
 
 warnings.filterwarnings('ignore')
 
-def get_token_length(batch_texts, tokenizer=None, MAX_LEN=None, is_hat=False):
+def get_token_length(batch_texts, tokenizer=None, MAX_LEN=None, model_type='hat'):
     print("Get token length")
-    if is_hat:
+    if model_type == 'hat' or model_type == 'longformer':
         inputs = tokenizer(batch_texts,
                                add_special_tokens=True,
                                max_length=MAX_LEN,                # Max length to truncate/pad
@@ -25,7 +25,7 @@ def get_token_length(batch_texts, tokenizer=None, MAX_LEN=None, is_hat=False):
                                truncation=True
                               )
         inputs = np.array(inputs['input_ids'])
-    else:
+    elif model_type == 'roberta':
         inputs = tokenizer.batch_encode_plus(batch_texts,
            return_tensors='pt',
            add_special_tokens=True,

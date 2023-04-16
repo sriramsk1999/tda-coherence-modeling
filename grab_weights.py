@@ -47,6 +47,34 @@ def grab_hat_attention_weights(model, tokenizer, sentences, MAX_LEN, device='cud
     attention = np.asarray([layer.cpu().detach().numpy() for layer in attention], dtype=np.float16)
     return attention
 
+def grab_longformer_attention_weights(model, tokenizer, sentences, MAX_LEN, device='cuda:1'):
+    '''Extract attention matrices from Longformer. 
+    '''
+    inputs = tokenizer([text_preprocessing(s) for s in sentences],
+                           add_special_tokens=True,
+                           max_length=MAX_LEN,                # Max length to truncate/pad
+                           padding='max_length',              # Pad sentence to max length)
+                           truncation=True
+                          )
+    input_ids = torch.tensor(inputs['input_ids']).to(device)
+    attention_mask = torch.tensor(inputs["attention_mask"]).to(device)
+    global_attention_mask = create_global_attention_mask(attention_mask)
+    with torch.no_grad():
+        outputs = model(input_ids, attention_mask, global_attention_mask)
+        local_attention = model(input_ids, attention_mask)['attentions']
+        global_attention = outputs['global_attentions']
+    # layer X sample X head X n_token X n_token
+    local_attention = np.asarray([layer.cpu().detach().numpy() for layer in local_attention], dtype=np.float16)
+    global_attention = np.asarray([layer.cpu().detach().numpy() for layer in global_attention], dtype=np.float16)
+    return local_attention, global_attention
+
+def create_global_attention_mask(attention_mask, N=256):
+    ''' Make one every N tokens a globally attending token. '''
+    global_attention_mask = torch.zeros_like(attention_mask)
+    # Set one every N tokens to one
+    global_attention_mask[:, [x for x in range(0,4096,N)]] = 1
+    return global_attention_mask
+
 def grab_weights_for_all(reviews,
                         #  model_name='bert-base-multilingual-cased',
                          model_name='robert-base',

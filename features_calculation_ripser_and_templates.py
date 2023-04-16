@@ -115,15 +115,15 @@ def calculate_features_t(adj_matricies, template_features, ids=None):
     return np.asarray(features) # layer X head X n_features X samples
 
 
-def get_list_of_ids(sentences, tokenizer, MAX_LEN=None, is_hat=False):
-    if is_hat:
+def get_list_of_ids(sentences, tokenizer, MAX_LEN=None, model_type='roberta'):
+    if model_type == 'hat' or model_type == 'longformer':
         inputs = tokenizer([text_preprocessing(s) for s in sentences],
                                add_special_tokens=True,
                                max_length=MAX_LEN,                # Max length to truncate/pad
                                padding='max_length',              # Pad sentence to max length)
                                truncation=True
                               )
-    else:
+    elif model_type == 'roberta':
         inputs = tokenizer.batch_encode_plus([text_preprocessing(s) for s in sentences],
                                            add_special_tokens=True,
                                            max_length=MAX_LEN,             # Max length to truncate/pad
