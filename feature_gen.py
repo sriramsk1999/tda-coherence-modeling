@@ -156,6 +156,9 @@ def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, model_type):
     elif model_type == 'longformer' or model_type == 'hat':
         adj_matricies_local = [x[0] for x in adj_matricies]
         adj_matricies_local = np.concatenate(adj_matricies_local, axis=1)
+        if model_type == 'hat':
+            # Expand 4D into 5D for HAT token level embeddings
+            adj_matricies_local = adj_matricies_local.reshape(MAX_LEN // 128, adj_matricies_local.shape[0] // (MAX_LEN // 128), 12, 128, 128)
         adj_matricies_local = np.swapaxes(adj_matricies_local,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
         adj_matricies_global = [x[1] for x in adj_matricies]
         adj_matricies_global  = np.concatenate(adj_matricies_global , axis=1)
@@ -166,14 +169,6 @@ def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, model_type):
 
 idx = 0
 for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
-    # Name of the file for topological features array
-    stats_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_{stats_name}_lists_array_{thrs}_thrs_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_{i+1}_of_{number_of_batches}.npy"
-    # Name of the file for ripser features array
-    ripser_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_ripser_{i+1}_of_{number_of_batches}.npy"
-    # Name of the file for template features array
-    template_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_template_{i+1}_of_{number_of_batches}.npy"
-
-    if os.path.exists(template_file): continue # Already generated, skipping
 
     t1 = time.time()
     # Refactor to run as a separate process so that memory is freed for ripserplusplus
@@ -202,144 +197,158 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
 
         adj_matricies = full
 
-    curr_batch_size = len(batched_sentences[i])
-    num_of_workers = curr_batch_size
-    pool = Pool(num_of_workers)
+    if args.model_type != 'hat':
+        raise NotImplementedError("Needs refactoring to work with other models. Currently expects local and global attention matrices to generate TDA features.")
+    full_adj_matricies = {'local': adj_matricies[0], 'global': adj_matricies[1]}
 
-    stats_tuple_lists_array = []
-    ntokens = ntokens_array[idx: idx+curr_batch_size]
-    splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
-    arguments = [(m, thresholds_array, ntokens, stats_name.split("_"), stats_cap) for m, ntokens in splitted]
-    stats_tuple_lists_array_part = pool.starmap(
-        count_top_stats, arguments
-    )
-    stats_tuple_lists_array.append(np.concatenate([_ for _ in stats_tuple_lists_array_part], axis=3))
+    for attn_type, adj_matricies in full_adj_matricies.items():
 
-    stats_tuple_lists_array = np.concatenate(stats_tuple_lists_array, axis=3)
-    np.save(stats_file, stats_tuple_lists_array)
-    print(f"Calculated topological features. Time taken: {time.time() - t1}s")
-    t1 = time.time()
+        curr_batch_size = len(batched_sentences[i])
+        num_of_workers = curr_batch_size
+        pool = Pool(num_of_workers)
 
-    # ##### Checking the size of features matrices:
-    #
-    # Layers amount **Х** Heads amount **Х** Features amount **X** Examples amount **Х** Thresholds amount
-    #
-    # **For example**:
-    #
-    # `stats_name == "s_w"` => `Features amount == 2`
-    #
-    # `stats_name == "b0b1"` => `Features amount == 2`
-    #
-    # `stats_name == "b0b1_c"` => `Features amount == 3`
-    #
-    # e.t.c.
-    #
-    # `thresholds_array == [0.025, 0.05, 0.1, 0.25, 0.5, 0.75]` => `Thresholds amount == 6`
+        stats_tuple_lists_array = []
+        ntokens = ntokens_array[idx: idx+curr_batch_size]
+        splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
+        arguments = [(m, thresholds_array, ntokens, stats_name.split("_"), stats_cap) for m, ntokens in splitted]
+        stats_tuple_lists_array_part = pool.starmap(
+            count_top_stats, arguments
+        )
+        stats_tuple_lists_array.append(np.concatenate([_ for _ in stats_tuple_lists_array_part], axis=3))
 
-    # Format: "h{dim}\_{type}\_{args}"
-    #
-    # Dimension: 0, 1, etc.; homology dimension
-    #
-    # Types:
-    #
-    #     1. s: sum of lengths; example: "h1_s".
-    #     2. m: mean of lengths; example: "h1_m"
-    #     3. v: variance of lengths; example "h1_v"
-    #     4. n: number of barcodes with time of birth/death more/less then threshold.
-    #         4.1. b/d: birth or death
-    #         4.2. m/l: more or less than threshold
-    #         4.2. t: threshold value
-    #        example: "h0_n_d_m_t0.5", "h1_n_b_l_t0.75"
-    #     5. t: time of birth/death of the longest barcode (not incl. inf).
-    #         3.1. b/d: birth of death
-    #         example: "h0_t_d", "h1_t_b"
-    #     6. nb: number of barcodes in dim
-    #        example: h0_nb
-    #     7. e: entropy; example: "h1_e"
+        stats_tuple_lists_array = np.concatenate(stats_tuple_lists_array, axis=3)
+        # Name of the file for topological features array
+        stats_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_{stats_name}_lists_array_{thrs}_thrs_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_{i+1}_{attn_type}_of_{number_of_batches}.npy"
+        np.save(stats_file, stats_tuple_lists_array)
+        print(f"Calculated topological features. Time taken: {time.time() - t1}s")
+        t1 = time.time()
 
-    dim = 1
-    lower_bound = 1e-3
-    ## Calculating and saving barcodes
+        # ##### Checking the size of features matrices:
+        #
+        # Layers amount **Х** Heads amount **Х** Features amount **X** Examples amount **Х** Thresholds amount
+        #
+        # **For example**:
+        #
+        # `stats_name == "s_w"` => `Features amount == 2`
+        #
+        # `stats_name == "b0b1"` => `Features amount == 2`
+        #
+        # `stats_name == "b0b1_c"` => `Features amount == 3`
+        #
+        # e.t.c.
+        #
+        # `thresholds_array == [0.025, 0.05, 0.1, 0.25, 0.5, 0.75]` => `Thresholds amount == 6`
 
-    barcodes = defaultdict(list)
-    splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
-    arguments = [(m, ntokens, dim, lower_bound) for m, ntokens in splitted]
-    barcodes_all_parts = pool.starmap(
-        get_only_barcodes, arguments
-    )
-    for barcode_part in barcodes_all_parts:
-        barcodes = unite_barcodes(barcodes, barcode_part)
+        # Format: "h{dim}\_{type}\_{args}"
+        #
+        # Dimension: 0, 1, etc.; homology dimension
+        #
+        # Types:
+        #
+        #     1. s: sum of lengths; example: "h1_s".
+        #     2. m: mean of lengths; example: "h1_m"
+        #     3. v: variance of lengths; example "h1_v"
+        #     4. n: number of barcodes with time of birth/death more/less then threshold.
+        #         4.1. b/d: birth or death
+        #         4.2. m/l: more or less than threshold
+        #         4.2. t: threshold value
+        #        example: "h0_n_d_m_t0.5", "h1_n_b_l_t0.75"
+        #     5. t: time of birth/death of the longest barcode (not incl. inf).
+        #         3.1. b/d: birth of death
+        #         example: "h0_t_d", "h1_t_b"
+        #     6. nb: number of barcodes in dim
+        #        example: h0_nb
+        #     7. e: entropy; example: "h1_e"
 
-    ripser_feature_names=[
-        'h0_s',
-        'h0_m',
-        'h0_v',
-        'h0_e',
-        'h0_t_b',
-        'h0_t_d',
-        'h0_nb',
-        'h0_q',
-        'h0_n_d_m_t0.75',
-        'h0_n_d_m_t0.5',
-        'h0_n_d_l_t0.25',
-        'h1_t_b',
-        'h1_n_b_m_t0.25',
-        'h1_n_b_l_t0.95',
-        'h1_n_b_l_t0.70',
-        'h1_s',
-        'h1_m',
-        'h1_v',
-        'h1_e',
-        'h1_t_b',
-        'h1_t_d',
-        'h1_nb',
-        'h1_q'
-    ]
+        dim = 1
+        lower_bound = 1e-3
+        ## Calculating and saving barcodes
 
-    features_array = []
-    features_part = []
-    n_heads = 12
-    for layer in range(n_layers):
-        features_layer = []
-        for head in range(n_heads):
-            barcode = reformat_barcodes(format_barcodes(barcodes[(layer, head)]))
-            features = ripser_count.count_ripser_features(barcode, ripser_feature_names)
-            features_layer.append(features)
-        features_part.append(features_layer)
-    features_array.append(np.asarray(features_part))
+        barcodes = defaultdict(list)
+        splitted = split_matricies_and_lengths(adj_matricies, ntokens, num_of_workers)
+        arguments = [(m, ntokens, dim, lower_bound) for m, ntokens in splitted]
+        barcodes_all_parts = pool.starmap(
+            get_only_barcodes, arguments
+        )
+        for barcode_part in barcodes_all_parts:
+            barcodes = unite_barcodes(barcodes, barcode_part)
 
-    features = np.concatenate(features_array, axis=2)
-    np.save(ripser_file, features)
-    print(f"Calculated ripser features. Time taken: {time.time() - t1}s")
-    t1 = time.time()
+        ripser_feature_names=[
+            'h0_s',
+            'h0_m',
+            'h0_v',
+            'h0_e',
+            'h0_t_b',
+            'h0_t_d',
+            'h0_nb',
+            'h0_q',
+            'h0_n_d_m_t0.75',
+            'h0_n_d_m_t0.5',
+            'h0_n_d_l_t0.25',
+            'h1_t_b',
+            'h1_n_b_m_t0.25',
+            'h1_n_b_l_t0.95',
+            'h1_n_b_l_t0.70',
+            'h1_s',
+            'h1_m',
+            'h1_v',
+            'h1_e',
+            'h1_t_b',
+            'h1_t_d',
+            'h1_nb',
+            'h1_q'
+        ]
 
-    if args.model_type == 'hat': # HAT does not support 'comma' and 'dot', these require token level attention map but HAT provides segment level maps
-        feature_list = ['self', 'beginning', 'prev', 'next']
-    elif args.model_type == 'roberta':
-        feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
-    elif args.model_type == 'longformer':
-        feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
-    features_array = []
+        features_array = []
+        features_part = []
+        n_heads = 12
+        for layer in range(n_layers):
+            features_layer = []
+            for head in range(n_heads):
+                barcode = reformat_barcodes(format_barcodes(barcodes[(layer, head)]))
+                features = ripser_count.count_ripser_features(barcode, ripser_feature_names)
+                features_layer.append(features)
+            features_part.append(features_layer)
+        features_array.append(np.asarray(features_part))
 
-    sentences = data['sentence'].values[idx:idx+curr_batch_size]
-    splitted_indexes = np.array_split(np.arange(curr_batch_size), num_of_workers)
-    splitted_list_of_ids = [
-        get_list_of_ids(sentences[indx], tokenizer, MAX_LEN, args.model_type)
-        for indx in splitted_indexes
-    ]
-    splitted_adj_matricies = [adj_matricies[indx] for indx in splitted_indexes]
+        # Name of the file for ripser features array
+        ripser_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_ripser_{i+1}_{attn_type}_of_{number_of_batches}.npy"
+        features = np.concatenate(features_array, axis=2)
+        np.save(ripser_file, features)
+        print(f"Calculated ripser features. Time taken: {time.time() - t1}s")
+        t1 = time.time()
 
-    arguments = [(m, feature_list, list_of_ids) for m, list_of_ids in zip(splitted_adj_matricies, splitted_list_of_ids)]
+        if args.model_type == 'hat': # HAT does not support 'comma' and 'dot', these require token level attention map but HAT provides segment level maps
+            feature_list = ['self', 'beginning', 'prev', 'next']
+        elif args.model_type == 'roberta':
+            feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
+        elif args.model_type == 'longformer':
+            feature_list = ['self', 'beginning', 'prev', 'next', 'comma', 'dot']
+        features_array = []
 
-    features_array_part = pool.starmap(
-        calculate_features_t, arguments
-    )
-    features_array.append(np.concatenate([_ for _ in features_array_part], axis=3))
+        sentences = data['sentence'].values[idx:idx+curr_batch_size]
+        splitted_indexes = np.array_split(np.arange(curr_batch_size), num_of_workers)
+        splitted_list_of_ids = [
+            get_list_of_ids(sentences[indx], tokenizer, MAX_LEN, args.model_type)
+            for indx in splitted_indexes
+        ]
+        splitted_adj_matricies = [adj_matricies[indx] for indx in splitted_indexes]
 
-    features_array = np.concatenate(features_array, axis=3)
-    np.save(template_file, features_array)
-    print(f"Calculated template features. Time taken: {time.time() - t1}s")
+        arguments = [(m, feature_list, list_of_ids) for m, list_of_ids in zip(splitted_adj_matricies, splitted_list_of_ids)]
 
-    # Free up pool resources to make space for model to grab attentions
-    pool.close()
+        features_array_part = pool.starmap(
+            calculate_features_t, arguments
+        )
+        features_array.append(np.concatenate([_ for _ in features_array_part], axis=3))
+
+        # Name of the file for template features array
+        template_file = f"{output_dir}/{subset}_all_heads_{len(layers_of_interest)}_layers_MAX_LEN_{MAX_LEN}_{model_path.split('/')[-1]}_template_{i+1}_{attn_type}_of_{number_of_batches}.npy"
+        features_array = np.concatenate(features_array, axis=3)
+        np.save(template_file, features_array)
+        print(f"Calculated template features. Time taken: {time.time() - t1}s")
+
+        # Free up pool resources to make space for model to grab attentions
+        pool.close()
+
+    idx += curr_batch_size
 

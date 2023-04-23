@@ -40,12 +40,15 @@ def grab_hat_attention_weights(model, tokenizer, sentences, MAX_LEN, device='cud
     attention_mask = torch.tensor(inputs["attention_mask"]).to(device)
     with torch.no_grad():
         outputs = model(input_ids, attention_mask)
-        attention = outputs['sentence_attentions']
+        sentence_attention = outputs['sentence_attentions']
         sentence_encoder_idxs = [2, 5, 8, 11] # Only 4 of the 12 idxs have valid outputs
-        attention = [attention[i] for i in sentence_encoder_idxs]
+        sentence_attention = [sentence_attention[i] for i in sentence_encoder_idxs]
+
+        token_attention = outputs['attentions'][0] # Only using token attention of first layer
     # layer X sample X head X n_token X n_token
-    attention = np.asarray([layer.cpu().detach().numpy() for layer in attention], dtype=np.float16)
-    return attention
+    sentence_attention = np.asarray([layer.cpu().detach().numpy() for layer in sentence_attention], dtype=np.float16)
+    token_attention = np.asarray([layer.cpu().detach().numpy() for layer in token_attention], dtype=np.float16)
+    return token_attention, sentence_attention
 
 def grab_longformer_attention_weights(model, tokenizer, sentences, MAX_LEN, device='cuda:1'):
     '''Extract attention matrices from Longformer. 
