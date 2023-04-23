@@ -149,11 +149,11 @@ def get_attention_matrices(model_path, tokenizer, batch, MAX_LEN, model_type):
         elif model_type == 'longformer':
             attention_w = grab_longformer_attention_weights(model, tokenizer, minibatch[i], MAX_LEN, 'cuda')
         adj_matricies.append(attention_w)
-    if model_type == 'roberta' or model_type == 'hat':
+    if model_type == 'roberta':
         # sample X layer X head X n_token X n_token
         adj_matricies = np.concatenate(adj_matricies, axis=1)
         adj_matricies = np.swapaxes(adj_matricies,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
-    elif model_type == 'longformer':
+    elif model_type == 'longformer' or model_type == 'hat':
         adj_matricies_local = [x[0] for x in adj_matricies]
         adj_matricies_local = np.concatenate(adj_matricies_local, axis=1)
         adj_matricies_local = np.swapaxes(adj_matricies_local,axis1=0,axis2=1) # sample X layer X head X n_token X n_token
@@ -183,6 +183,24 @@ for i in tqdm(range(number_of_batches), desc="Feature Calculation Loop"):
     attention_grab.join()
     print(f"Grabbed attentions. Time taken: {time.time() - t1}s")
     t1 = time.time()
+
+    if args.model_type == 'longformer':
+        localM, globalM = adj_matricies
+        full = np.zeros((localM.shape[0], localM.shape[1], localM.shape[2], MAX_LEN, MAX_LEN))
+
+        nlocal_token = localM.shape[-1] - 513
+        vertical_val = localM[:,:,:,:,:nlocal_token]
+        local_val = localM[:,:,:,:,nlocal_token:] # 513 tokens
+        for attn_idx in range(MAX_LEN):
+            full[:,:,:,attn_idx, max(0, attn_idx-256):min(MAX_LEN, attn_idx+256+1)] = local_val[:,:,:,attn_idx, max(256-attn_idx, 0):256+min(MAX_LEN-attn_idx, 257)]  
+
+        N=256
+        global_idxs = [ii for ii in range(0, N*globalM.shape[-1], N)]
+        for jj, global_idx in enumerate(global_idxs):
+            full[:,:,:,:, global_idx] = globalM[:,:,:,:,jj]  
+            full[:,:,:,global_idx, :] = vertical_val[:,:,:,:,jj]  
+
+        adj_matricies = full
 
     curr_batch_size = len(batched_sentences[i])
     num_of_workers = curr_batch_size

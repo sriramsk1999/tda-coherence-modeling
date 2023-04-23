@@ -61,7 +61,7 @@ def grab_longformer_attention_weights(model, tokenizer, sentences, MAX_LEN, devi
     global_attention_mask = create_global_attention_mask(attention_mask)
     with torch.no_grad():
         outputs = model(input_ids, attention_mask, global_attention_mask)
-        local_attention = model(input_ids, attention_mask)['attentions']
+        local_attention = outputs['attentions']
         global_attention = outputs['global_attentions']
     # layer X sample X head X n_token X n_token
     local_attention = np.asarray([layer.cpu().detach().numpy() for layer in local_attention], dtype=np.float16)
